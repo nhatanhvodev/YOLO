@@ -3,6 +3,7 @@ import webbrowser
 import os
 import numpy as np
 import logging
+from typing import Iterable, List, Tuple
 
 from flask import Flask, jsonify, url_for
 from flask import render_template, Response
@@ -18,6 +19,46 @@ app.config['MYSQL_USER'] = 'root'
 app.config['MYSQL_PASSWORD'] = ''
 app.config['MYSQL_DB'] = 'yolo'
 mysql = MySQL(app)
+USE_DB = os.getenv("USE_DB", "0") == "1"
+
+# Fixed vehicle order so front-end consistently receives five rows
+VEHICLE_ORDER = ["OTO", "Xe May", "Xe Dap", "Xe Tai", "Xe Bus"]
+
+
+def _normalise_rows(rows: Iterable[Tuple], *, include_date: bool) -> List[List]:
+    """Return a list of vehicle stats aligned with VEHICLE_ORDER.
+
+    The chart expects five entries regardless of DB data, so we backfill
+    any missing classes with zero counts. When ``include_date`` is True we
+    ensure a date value is always present (defaulting to today if missing).
+    """
+
+    today = datetime.date.today().isoformat()
+    totals = {name: {"count": 0, "date": None} for name in VEHICLE_ORDER}
+
+    for row in rows:
+        try:
+            name = row[0]
+        except (IndexError, TypeError):
+            continue
+        if name not in totals:
+            continue
+        totals[name]["count"] = row[2] if len(row) > 2 else 0
+        if include_date and len(row) > 1:
+            # Convert date objects to ISO strings for JSON serialisation
+            date_value = row[1]
+            if isinstance(date_value, datetime.date):
+                totals[name]["date"] = date_value.isoformat()
+            else:
+                totals[name]["date"] = date_value
+
+    normalised = []
+    for name in VEHICLE_ORDER:
+        date_val = totals[name]["date"] if include_date else None
+        if include_date and not date_val:
+            date_val = today
+        normalised.append([name, date_val, totals[name]["count"]])
+    return normalised
 
 logging.basicConfig(level=logging.INFO, format='[%(levelname)s] %(message)s')
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -29,30 +70,57 @@ BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 #
 @app.route('/test', methods=['GET'])
 def get_violate():
+    if not USE_DB:
+        logging.debug("USE_DB disabled, returning default aggregate stats")
+        return jsonify(_normalise_rows([], include_date=False))
+
     try:
         cur = mysql.connection.cursor()
         cur.execute(
-            "SELECT nametransportation.vh_name  ,  transportationviolation.date_violate , COUNT(*) AS total_violate FROM transportationviolation INNER JOIN nametransportation ON transportationviolation.id_name = nametransportation.id_name  GROUP BY nametransportation.id_name ;")
+            """
+            SELECT nametransportation.vh_name,
+                   transportationviolation.date_violate,
+                   COUNT(*) AS total_violate
+            FROM transportationviolation
+            INNER JOIN nametransportation
+              ON transportationviolation.id_name = nametransportation.id_name
+            GROUP BY nametransportation.id_name
+            """
+        )
         users = cur.fetchall()
         cur.close()
-        return jsonify(users)
+        return jsonify(_normalise_rows(users, include_date=False))
     except Exception as e:
         logging.error(f"DB error /test: {e}")
-        return jsonify({'error': 'DB unavailable'}), 503
+        return jsonify(_normalise_rows([], include_date=False))
 
 
 @app.route('/test1', methods=['GET'])
 def get_violate_current():
+    if not USE_DB:
+        logging.debug("USE_DB disabled, returning default daily stats")
+        return jsonify(_normalise_rows([], include_date=True))
+
     try:
         cur = mysql.connection.cursor()
         cur.execute(
-            "SELECT nametransportation.vh_name  ,   transportationviolation.date_violate , COUNT(*) AS total_violate FROM transportationviolation INNER JOIN nametransportation ON transportationviolation.id_name = nametransportation.id_name  where transportationviolation.date_violate = curdate() GROUP BY nametransportation.id_name ;")
+            """
+            SELECT nametransportation.vh_name,
+                   transportationviolation.date_violate,
+                   COUNT(*) AS total_violate
+            FROM transportationviolation
+            INNER JOIN nametransportation
+              ON transportationviolation.id_name = nametransportation.id_name
+            WHERE transportationviolation.date_violate = CURDATE()
+            GROUP BY nametransportation.id_name
+            """
+        )
         users = cur.fetchall()
         cur.close()
-        return jsonify(users)
+        return jsonify(_normalise_rows(users, include_date=True))
     except Exception as e:
         logging.error(f"DB error /test1: {e}")
-        return jsonify({'error': 'DB unavailable'}), 503
+        return jsonify(_normalise_rows([], include_date=True))
 
 
 # @app.route('/create', methods=['GET'])

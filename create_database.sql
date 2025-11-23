@@ -1,5 +1,5 @@
-create database datn;
-use datn;
+create database yolo;
+use yolo;
 create table nametransportation(
 	id_name int primary key,
     vh_name varchar(255)
